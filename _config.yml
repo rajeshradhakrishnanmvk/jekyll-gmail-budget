@@ -1,0 +1,5 @@
+title: Jekyll Gmail Budget
+baseurl: ""
+url: ""
+
+# No secrets here. Provide Client ID and Spreadsheet ID in the UI when running locally.
