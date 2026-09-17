@@ -1,192 +1,122 @@
-// Simple client-side app using Google Identity Services + gapi
-// IMPORTANT: Run on http://localhost:4000 while developing and add that origin to your OAuth client allowed origins.
+// Freelancer Cashflow Forecast — client-side app (no external APIs)
+// Features: manual invoice entry, CSV import/export, localStorage persistence,
+// and a 6-month cashflow forecast based on invoice due dates.
 
-const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/spreadsheets';
-let tokenClient;
-let gapiInited = false;
-let gisInited = false;
-let clientId = '';
-let apiKey = ''; // optional
+const STORAGE_KEY = 'fgb_invoices_v1';
 
-function log(msg){const out=document.getElementById('output'); out.textContent += msg + '\n'; out.scrollTop = out.scrollHeight;}
+function $(id){ return document.getElementById(id); }
 
-function initButtons(){
-  document.getElementById('authorize-btn').addEventListener('click', async ()=>{
-    clientId = document.getElementById('client-id').value.trim();
-    const spreadsheetId = document.getElementById('spreadsheet-id').value.trim();
-    if(!clientId){alert('Provide OAuth Client ID from Google Cloud Console'); return}
-    if(!spreadsheetId){alert('Provide Spreadsheet ID to save results'); return}
-    if(!gisInited){initGis(clientId)}
-    await handleAuth(spreadsheetId);
-  });
-  document.getElementById('append-sheet').addEventListener('click', ()=>{
-    const spreadsheetId = document.getElementById('spreadsheet-id').value.trim();
-    if(!spreadsheetId) return alert('Set spreadsheet ID');
-    appendBudgetToSheet(spreadsheetId);
-  })
+function init(){
+  // wire up buttons
+  $('add-invoice').addEventListener('click', addInvoice);
+  $('export-csv').addEventListener('click', exportCSV);
+  $('import-csv').addEventListener('click', ()=> $('csv-file').click());
+  $('csv-file').addEventListener('change', handleCSVFile);
+  $('clear-data').addEventListener('click', clearData);
+  renderInvoices();
+  renderForecast();
 }
 
-function initGis(client_id){
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: client_id,
-    scope: SCOPES,
-    callback: '', // will be set later
-  });
-  gisInited = true;
-  log('GIS initialized');
+window.addEventListener('load', init);
+
+function loadInvoices(){
+  try{ const raw = localStorage.getItem(STORAGE_KEY); return raw? JSON.parse(raw): [] }catch(e){ return [] }
 }
 
-function gapiLoad(){
-  gapi.load('client', () => {
-    gapiInited = true;
-    log('gapi.client loaded');
-  });
-}
-window.onload = ()=>{initButtons(); window.gapiOnLoad = gapiLoad};
+function saveInvoices(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }
 
-async function handleAuth(spreadsheetId){
-  return new Promise((resolve,reject)=>{
-    tokenClient.callback = async (resp)=>{
-      if(resp.error){log('Auth error: '+ JSON.stringify(resp)); return reject(resp)}
-      log('Got access token');
-      try{
-        await gapi.client.init({apiKey: apiKey, discoveryDocs: [
-          'https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest',
-          'https://sheets.googleapis.com/$discovery/rest?version=v4'
-        ]});
-        log('gapi.client initialized');
-        // proceed to fetch
-        fetchAndBuildBudget().then(()=>{
-          document.getElementById('signout-btn').style.display='inline-block';
-          document.getElementById('append-sheet').style.display='inline-block';
-          resolve();
-        }).catch(reject);
-      }catch(e){reject(e)}
-    };
-    // request access token
-    tokenClient.requestAccessToken({prompt: 'consent'});
-  });
+function addInvoice(){
+  const client = $('client').value.trim();
+  const amount = parseFloat(($('amount').value||'').replace(/,/g,''));
+  const currency = $('currency').value.trim() || 'USD';
+  const issued = $('issued').value || null;
+  const due = $('due').value || null;
+  const paid = $('paid').checked;
+  const notes = $('notes').value || '';
+  if(!client || isNaN(amount) || !due){ alert('Client, amount and due date are required'); return }
+  const invoices = loadInvoices();
+  invoices.push({id: Date.now(), client, amount, currency, issued, due, paid, notes});
+  saveInvoices(invoices);
+  clearForm(); renderInvoices(); renderForecast();
 }
 
-async function fetchAndBuildBudget(){
-  log('Listing recent messages...');
-  // Query heuristics: look for transactional keywords and recent 90 days
-  const q = 'newer_than:90d (receipt OR transaction OR paid OR payment OR debited OR charged OR invoice OR "confirmed")';
-  const listResp = await gapi.client.gmail.users.messages.list({userId: 'me', q, maxResults: 200});
-  if(!listResp.result.messages || listResp.result.messages.length===0){log('No messages found'); return}
-  log(`Found ${listResp.result.messages.length} messages`);
-  const messages = listResp.result.messages;
-  const expenses = [];
-  for(const m of messages){
-    try{
-      const msg = await gapi.client.gmail.users.messages.get({userId:'me', id: m.id, format:'full'});
-      const snippet = msg.result.snippet || '';
-      const payload = msg.result.payload;
-      const body = extractBody(payload) || '';
-      const text = (snippet + '\n' + body).replace(/=\r?\n/g,'');
-      const found = parseAmounts(text);
-      if(found.length){
-        found.forEach(f=> expenses.push({source: msg.result.payload.headers, snippet: snippet, amount: f.amount, currency: f.currency, raw: f.raw}));
-      }
-    }catch(e){ log('msg fetch err: '+e.message) }
+function clearForm(){ $('client').value=''; $('amount').value=''; $('currency').value='USD'; $('issued').value=''; $('due').value=''; $('paid').checked=false; $('notes').value=''; }
+
+function renderInvoices(){
+  const invoices = loadInvoices();
+  const container = $('invoices-container');
+  if(invoices.length===0){ container.innerHTML = '<em>No invoices yet.</em>'; return }
+  let html = '<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Client</th><th>Amount</th><th>Currency</th><th>Due</th><th>Paid</th><th>Notes</th><th>Actions</th></tr>';
+  invoices.sort((a,b)=> new Date(a.due) - new Date(b.due));
+  for(const inv of invoices){
+    html += `<tr><td>${escapeHtml(inv.client)}</td><td style="text-align:right">${inv.amount.toFixed(2)}</td><td>${escapeHtml(inv.currency)}</td><td>${inv.due||''}</td><td>${inv.paid? 'Yes':'No'}</td><td>${escapeHtml(inv.notes)}</td><td><button data-id="${inv.id}" class="mark-paid">Toggle Paid</button> <button data-id="${inv.id}" class="del">Delete</button></td></tr>`;
   }
-  // Aggregate into categories (simple keyword mapping)
-  const categorized = categorizeExpenses(expenses);
-  const summary = summarize(categorized);
-  log('Budget summary:\n' + JSON.stringify(summary, null, 2));
-  // store in window for later append
-  window._lastBudget = {summary, categorized, expenses};
+  html += '</table>';
+  container.innerHTML = html;
+  // attach handlers
+  container.querySelectorAll('.mark-paid').forEach(b=> b.addEventListener('click', e=> togglePaid(e.target.dataset.id)));
+  container.querySelectorAll('.del').forEach(b=> b.addEventListener('click', e=> deleteInvoice(e.target.dataset.id)));
 }
 
-function extractBody(payload){
-  if(!payload) return '';
-  if(payload.parts){
-    for(const p of payload.parts){
-      if(p.mimeType === 'text/plain' && p.body && p.body.data) return base64Decode(p.body.data);
-      if(p.parts) return extractBody(p);
-    }
+function togglePaid(id){ const invoices = loadInvoices(); const idx = invoices.findIndex(i=> i.id==id); if(idx>=0){ invoices[idx].paid = !invoices[idx].paid; saveInvoices(invoices); renderInvoices(); renderForecast(); } }
+function deleteInvoice(id){ if(!confirm('Delete invoice?')) return; const invoices = loadInvoices().filter(i=> i.id!=id); saveInvoices(invoices); renderInvoices(); renderForecast(); }
+
+function escapeHtml(s){ return (s||'').replace(/[&<>\"]/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function exportCSV(){ const invoices = loadInvoices(); if(invoices.length===0){ alert('No data to export'); return };
+  const hdr = ['client','amount','currency','issued','due','paid','notes'];
+  const rows = invoices.map(i=> hdr.map(h=> JSON.stringify(i[h]===undefined?'': (i[h]===null?'':i[h])) ).join(','));
+  const csv = hdr.join(',') + '\n' + rows.join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'invoices.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+function handleCSVFile(e){ const f = e.target.files[0]; if(!f) return; const reader = new FileReader(); reader.onload = ()=> { parseCSV(reader.result); e.target.value=''; }; reader.readAsText(f); }
+
+function parseCSV(text){ // naive CSV parse assuming simple rows
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if(lines.length<1) return alert('Empty CSV');
+  const hdr = lines[0].split(',').map(h=> h.trim().replace(/^"|"$/g,''));
+  const required = ['client','amount','due'];
+  const hasRequired = required.every(r=> hdr.includes(r));
+  if(!hasRequired) return alert('CSV must include headers: client,amount,due');
+  const invoices = loadInvoices();
+  for(let i=1;i<lines.length;i++){
+    const cols = splitCSVLine(lines[i]); if(cols.length===0) continue;
+    const obj = {};
+    for(let j=0;j<hdr.length;j++){ obj[hdr[j]] = cols[j] ? cols[j].replace(/^"|"$/g,'') : '' }
+    obj.id = Date.now() + i;
+    obj.amount = parseFloat((obj.amount||'').replace(/[^0-9\.\-]/g,'')) || 0;
+    obj.currency = obj.currency || 'USD';
+    obj.paid = (obj.paid||'').toLowerCase() === 'true' || false;
+    invoices.push(obj);
   }
-  if(payload.body && payload.body.data) return base64Decode(payload.body.data);
-  return '';
+  saveInvoices(invoices); renderInvoices(); renderForecast(); alert('Imported ' + (lines.length-1) + ' rows');
 }
 
-function base64Decode(b64){
-  // Gmail returns base64url
-  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
-  try{ const decoded = atob(b64); return decoded }catch(e){ return '' }
-}
+function splitCSVLine(line){ const parts=[]; let cur=''; let inQ=false; for(let ch of line){ if(ch==='"'){ inQ=!inQ; cur+=ch; } else if(ch===',' && !inQ){ parts.push(cur); cur=''; } else cur+=ch } if(cur!=='') parts.push(cur); return parts; }
 
-function parseAmounts(text){
-  // simple regex to find currency amounts like 1,234.56 or 1234 or ₹123
-  const re = /([\$₹€£]?\s?)([0-9]+(?:[\,\s][0-9]{3})*(?:\.[0-9]{1,2})?)/g;
-  const out = [];
-  let m;
-  while((m = re.exec(text))!==null){
-    const raw = m[0];
-    const currency = m[1].trim() || '';
-    const num = m[2].replace(/[\,\s]/g,'');
-    const amount = parseFloat(num);
-    if(!isNaN(amount) && amount>0) out.push({raw, amount, currency});
+function clearData(){ if(!confirm('Clear all saved invoices?')) return; localStorage.removeItem(STORAGE_KEY); renderInvoices(); renderForecast(); }
+
+function renderForecast(){
+  const invoices = loadInvoices().filter(i=> !i.paid && i.due);
+  const container = $('forecast-container');
+  if(invoices.length===0){ container.innerHTML = '<em>No outstanding invoices to forecast.</em>'; return }
+  const months = buildMonths(6);
+  const rows = months.map(m=> ({monthLabel: m.label, start: m.start, end: m.end, total: 0}));
+  for(const inv of invoices){
+    const due = new Date(inv.due);
+    for(const r of rows){ if(due >= r.start && due <= r.end){ r.total += (inv.amount||0); break } }
   }
-  return out;
+  // HTML table
+  let html = '<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Month</th><th>Projected Inflow (outstanding)</th></tr>';
+  let cumulative = 0;
+  for(const r of rows){ cumulative += r.total; html += `<tr><td>${r.monthLabel}</td><td style="text-align:right">${r.total.toFixed(2)}</td></tr>` }
+  html += `<tr><th>Total (next ${rows.length} months)</th><th style="text-align:right">${rows.reduce((s,v)=> s+v.total,0).toFixed(2)}</th></tr>`;
+  html += '</table>';
+  container.innerHTML = html;
 }
 
-function categorizeExpenses(expenses){
-  const mapping = [
-    {k:['uber','ola','taxi','ride'], cat:'Transport'},
-    {k:['amazon','flipkart','shopping','order','purchase'], cat:'Shopping'},
-    {k:['grocery','groceries','bigbasket','dmart'], cat:'Groceries'},
-    {k:['rent','rent due'], cat:'Rent'},
-    {k:['salary','credited'], cat:'Income'}
-  ];
-  const res = {};
-  for(const e of expenses){
-    const snippet = (e.snippet||'').toLowerCase();
-    let cat = 'Other';
-    for(const m of mapping){ if(m.k.some(tok=> snippet.includes(tok))) { cat = m.cat; break }}
-    if(!res[cat]) res[cat]=[];
-    res[cat].push(e);
-  }
-  return res;
-}
+function buildMonths(n){ const out=[]; const now = new Date(); for(let i=0;i<n;i++){ const d = new Date(now.getFullYear(), now.getMonth()+i, 1); const start = new Date(d.getFullYear(), d.getMonth(), 1); const end = new Date(d.getFullYear(), d.getMonth()+1, 0, 23,59,59,999); out.push({label: d.toLocaleString(undefined, {month:'short', year:'numeric'}), start, end}); } return out }
 
-function summarize(categorized){
-  const summary = {};
-  for(const cat of Object.keys(categorized)){
-    summary[cat] = categorized[cat].reduce((s,e)=> s + (e.amount||0), 0);
-  }
-  return summary;
-}
-
-async function appendBudgetToSheet(spreadsheetId){
-  if(!window._lastBudget) return alert('No budget built yet');
-  const values = [['Category','Amount','Currency','Count']];
-  for(const [cat, arr] of Object.entries(window._lastBudget.categorized)){
-    const total = arr.reduce((s,a)=> s + (a.amount||0),0);
-    const currency = arr.length? arr[0].currency:'',
-    values.push([cat, total.toFixed(2), currency, arr.length]);
-  }
-  const resource = {values};
-  try{
-    const resp = await gapi.client.sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: 'Sheet1!A1',
-      valueInputOption: 'USER_ENTERED',
-      resource
-    });
-    log('Appended to sheet: ' + JSON.stringify(resp.result, null, 2));
-  }catch(e){ log('Sheets append error: '+ e.message) }
-}
-
-// Sign out (revoke token) — simple page reload
-function signOut(){
-  // revoke token by removing from google.accounts
-  google.accounts.oauth2.revoke(gapi.client.getToken && gapi.client.getToken().access_token, ()=>{
-    log('Signed out');
-    window.location.reload();
-  });
-}
-
-document.addEventListener('click', (e)=>{
-  if(e.target && e.target.id === 'signout-btn') signOut();
-});
