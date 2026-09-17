@@ -1,23 +1,28 @@
-Jekyll Gmail → Budget
-=====================
+Freelancer Cashflow Forecast
+=============================
 
 Overview
 --------
-A minimal Jekyll static site that authenticates users with Google (OAuth) from the browser, reads recent transactional emails using the Gmail API, parses amounts, generates a simple budget summary, and can append the summary to a Google Sheet.
+A client-side Jekyll app for freelancers to manage invoices and forecast cashflow. Add invoices manually or import a CSV, then preview a 6-month projected inflow based on invoice due dates.
 
-Setup
------
-1. Create a Google Cloud Project and enable the Gmail API and Google Sheets API.
-2. Create OAuth 2.0 Client ID (type: Web application). Add origin: http://localhost:4000 and redirect URI if needed.
-3. Run locally: cd jekyll-gmail-budget && bundle install && bundle exec jekyll serve
-4. Open http://localhost:4000, paste your OAuth Client ID and target Spreadsheet ID, then click "Authorize & Fetch Emails".
-
-Security
+Features
 --------
-- Do NOT commit secrets. The app requests OAuth tokens in-browser. Keep spreadsheet IDs and client IDs private if you wish.
+- Manual invoice entry (client, amount, issued/due dates, paid flag, notes)
+- CSV import/export (headers: client,amount,currency,issued,due,paid,notes)
+- Data stored locally in browser localStorage (no server)
+- 6-month forecast table of projected inflows from outstanding invoices
 
-Notes & limitations
--------------------
-- This is a client-side implementation; sensitive data is handled by the user's browser only.
-- Parsing is heuristic-based; refine regexes and category mapping for production use.
+Run locally
+-----------
+1. cd jekyll-gmail-budget
+2. bundle install
+3. bundle exec jekyll serve
+4. Open http://localhost:4000
 
+Security & privacy
+------------------
+All data stays in the browser localStorage. Do not commit sensitive data to the repository.
+
+Next improvements
+-----------------
+- Add charts (Chart.js), IndexedDB for larger datasets, CSV parsing library for edge cases, and PDF/receipt import.
